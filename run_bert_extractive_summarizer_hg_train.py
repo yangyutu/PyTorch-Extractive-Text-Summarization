@@ -6,7 +6,7 @@ import pytorch_lightning as pl
 from pytorch_lightning import loggers as pl_loggers
 
 from data_utils.text_data import PretokenizedTextData, build_dataloader
-from models.bert_encoder import SentenceEncoder, InterSentenceEncoder
+from models.bert_encoder import SentenceEncoder, HGInterSentenceEncoder
 from models.extractive_summarizer import BertExtractiveSummarizer
 from pytorch_lightning.callbacks import LearningRateMonitor, ModelCheckpoint
 from pytorch_lightning.callbacks.progress import TQDMProgressBar
@@ -17,7 +17,7 @@ def main(args):
     # fix random seeds for reproducibility
     SEED = args.seed
     pl.seed_everything(SEED)
-    dataset = PretokenizedTextData(data_dir=args.data_dir, split="valid")
+    dataset = PretokenizedTextData(data_dir=args.data_dir, split="train")
     train_dataloader = build_dataloader(
         dataset, batch_size=args.batch_size, num_workers=args.num_workers
     )
@@ -31,7 +31,7 @@ def main(args):
     config["lr_warm_up_steps"] = args.lr_warm_up_steps
 
     encoder = SentenceEncoder(args.pretrained_model_name)
-    inter_sent_encoder = InterSentenceEncoder(
+    inter_sent_encoder = HGInterSentenceEncoder(
         d_model=args.d_model,
         d_ff=args.d_ff,
         heads=args.num_heads,
@@ -45,7 +45,12 @@ def main(args):
         inter_sentence_encoder=inter_sent_encoder,
     )
 
-    tags = [args.model_name, args.dataset_name, args.pretrained_model_name]
+    tags = [
+        args.model_name,
+        args.dataset_name,
+        args.pretrained_model_name,
+        "HGInterTransformer",
+    ]
     if args.exp_tag:
         tags.append(args.exp_tag)
     wandb_logger = WandbLogger(

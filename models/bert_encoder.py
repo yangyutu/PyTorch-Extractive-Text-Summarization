@@ -2,9 +2,10 @@ import math
 
 import torch
 import torch.nn as nn
-from transformers import AutoModel, AutoTokenizer
 
 from models.neural import MultiHeadedAttention, PositionwiseFeedForward
+from transformers import AutoConfig, AutoModel, AutoTokenizer
+from transformers.models.bert.modeling_bert import BertEncoder
 
 
 class PositionalEncoding(nn.Module):
@@ -46,6 +47,7 @@ class TransformerEncoderLayer(nn.Module):
         self.dropout = nn.Dropout(dropout)
 
     def forward(self, iter, query, inputs, mask):
+        # mask convention: 0 for valid position, 1 for invalid position
         if iter != 0:
             input_norm = self.layer_norm(inputs)
         else:
@@ -95,7 +97,7 @@ class InterSentenceEncoder(nn.Module):
 
     def forward(self, cls_vecs, cls_mask):
         """See :obj:`EncoderBase.forward()`"""
-
+        # cls_mask: 1 for non-padded position, 0 for padded position
         batch_size, n_sents = cls_vecs.size(0), cls_vecs.size(1)
         pos_emb = self.pos_emb.pe[:, :n_sents]  # pos_emb: [1 x cls_seq_len x d_model]
         x = (
@@ -108,8 +110,54 @@ class InterSentenceEncoder(nn.Module):
                 i, x, x, ~cls_mask
             )  # all_sents * max_tokens * dim
 
-        x = self.layer_norm(x)
+        x = self.layer_norm(x)  # x shape: batch_size x seq_len x embed_dim
         sent_scores = self.pred(x)
+
+        return sent_scores
+
+
+class HGInterSentenceEncoder(nn.Module):
+    def __init__(self, d_model, d_ff, heads, dropout, num_inter_layers=2):
+        super().__init__()
+        self.d_model = d_model
+        self.num_inter_layers = num_inter_layers
+        self.pos_emb = PositionalEncoding(dropout, d_model)
+
+        config = AutoConfig.from_pretrained("bert-base-uncased")
+        config.update(
+            {
+                "num_attention_heads": heads,
+                "hidden_size": d_model,
+                "intermediate_size": d_ff,
+                "num_hidden_layers": num_inter_layers,
+            }
+        )
+        self.transformer_inter = BertEncoder(config)
+        self.layer_norm = nn.LayerNorm(d_model, eps=1e-6)
+        self.pred = nn.Linear(d_model, 2, bias=True)
+
+    def forward(self, cls_vecs, cls_mask):
+        """See :obj:`EncoderBase.forward()`"""
+        # cls_mask: 1 for non-padded position, 0 for padded position
+        batch_size, n_sents = cls_vecs.size(0), cls_vecs.size(1)
+        pos_emb = self.pos_emb.pe[:, :n_sents]  # pos_emb: [1 x cls_seq_len x d_model]
+        x = (
+            cls_vecs * cls_mask[:, :, None].float()
+        )  # x: [batch_size, cls_seq_len x d_model]
+        x = self.layer_norm(x + pos_emb)
+
+        mask = (
+            cls_mask.float()
+            .masked_fill(cls_mask == 0, float("-inf"))
+            .masked_fill(cls_mask == 1, float(0.0))
+        )
+        # - if the model is an encoder, make the mask broadcastable to [batch_size, num_heads, seq_length, seq_length]
+        # https://github.com/huggingface/transformers/blob/main/src/transformers/models/bert/modeling_bert.py#L994
+        mask = mask[:, None, None, :]
+        embedding = self.transformer_inter(x, attention_mask=mask)
+        encoded_embeddings = embedding.last_hidden_state
+        # encoded_embeddings shape: batch_size x seq_len x embed_dim
+        sent_scores = self.pred(encoded_embeddings)
 
         return sent_scores
 
@@ -131,8 +179,31 @@ def _test_token_encoder():
         inter_sent_encoder.to(device)
         cls_vecs, cls_mask = encoder(batch)
         sent_scores = inter_sent_encoder(cls_vecs, cls_mask)
+        print(sent_scores)
+        break
+
+
+def _test_token_hg_encoder():
+    from data_utils.text_data import PretokenizedTextData, build_dataloader
+
+    data_dir = "/mnt/d/MLData/data/summarization/bert_data/bert_data_cnndm_ext"
+    dataset = PretokenizedTextData(data_dir=data_dir, split="valid")
+    data_loader = build_dataloader(dataset, batch_size=6)
+    encoder = SentenceEncoder("bert-base-uncased")
+    inter_sent_encoder = HGInterSentenceEncoder(
+        d_model=768, d_ff=2048, heads=8, num_inter_layers=2, dropout=0.2
+    )
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    for batch in data_loader:
+        batch.to(device)
+        encoder.to(device)
+        inter_sent_encoder.to(device)
+        cls_vecs, cls_mask = encoder(batch)
+        sent_scores = inter_sent_encoder(cls_vecs, cls_mask)
+        print(sent_scores.shape)
         break
 
 
 if __name__ == "__main__":
-    _test_token_encoder()
+    # _test_token_encoder()
+    _test_token_hg_encoder()

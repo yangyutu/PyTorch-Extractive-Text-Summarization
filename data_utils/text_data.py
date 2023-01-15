@@ -80,7 +80,7 @@ class Batch:
         self.token_input, self.token_attn_mask = None, None
         self.cls_input, self.cls_attn_mask = None, None
         self.cls_labels_pad_idx = -1
-        self.src_lent_labels = src_sent_labels
+        self.src_sent_labels = src_sent_labels
         # Build batch inputs
         self.init_encoder_token_seq(src_token_ids, src_len, cls_locs, src_sent_labels)
 
